@@ -1,0 +1,74 @@
+name: Build VSIX Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. vsix-2026-09-08)'
+        required: true
+        default: 'vsix-latest'
+      release_name:
+        description: 'Release title'
+        required: false
+        default: 'VSIX Extensions Pack'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare output dir
+        run: mkdir -p vsix
+
+      - name: Download all VSIX from Marketplace
+        run: |
+          set -e
+          extensions=(
+            "ms-python|python"
+            "ms-python|vscode-pylance"
+            "vscjava|vscode-java-pack"
+            "redhat|java"
+            "vscjava|vscode-java-debug"
+            "vscjava|vscode-java-test"
+            "vscjava|vscode-maven"
+            "vscjava|vscode-java-dependency"
+            "VisualStudioExptTeam|vscodeintellicode"
+          )
+          for entry in "${extensions[@]}"; do
+            publisher="${entry%%|*}"
+            name="${entry##*|}"
+            echo "--- Fetching $publisher.$name ---"
+            # Query Marketplace API for latest version
+            version=$(curl -s -X POST 'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery' \
+              -H 'Accept: application/json;api-version=3.0-preview.1' \
+              -H 'Content-Type: application/json' \
+              -d "{\"filters\":[{\"criteria\":[{\"filterType\":7,\"value\":\"${publisher}.${name}\"}]}],\"flags\":103}" \
+              | jq -r '.results[0].extensions[0].versions[0].version')
+            if [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "!! failed to resolve version for $publisher.$name"
+              continue
+            fi
+            echo "   version = $version"
+            url="https://${publisher}.gallery.vsassets.io/_apis/public/gallery/publisher/${publisher}/extension/${name}/${version}/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
+            file="vsix/${publisher}.${name}-${version}.vsix"
+            curl -sSL -o "$file" "$url"
+            size=$(stat -c%s "$file")
+            echo "   saved $file ($size bytes)"
+          done
+          ls -la vsix/
+
+      - name: Create Release with VSIX assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${{ github.event.inputs.release_tag }}"
+          title="${{ github.event.inputs.release_name }}"
+          # Delete existing release/tag with the same name (idempotent runs)
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" \
+            --title "$title" \
+            --notes "VSIX pack built on $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            vsix/*.vsix
