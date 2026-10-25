@@ -1,0 +1,53 @@
+name: Fetch GitHub Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repository (owner/name)'
+        required: true
+        default: 'NabiKAZ/vscode-copilot-rtl'
+      ref:
+        description: 'Branch, tag or commit (empty = default branch)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone, package and zip
+        env:
+          REPO: ${{ github.event.inputs.repo }}
+          REF: ${{ github.event.inputs.ref }}
+        run: |
+          set -e
+          if ! [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid repo: $REPO"; exit 1
+          fi
+          name="${REPO#*/}"
+          git clone "https://github.com/${REPO}.git" "src/${name}"
+          if [ -n "$REF" ]; then git -C "src/${name}" checkout "$REF"; fi
+          mkdir -p out
+          git -C "src/${name}" archive --format=zip --prefix="${name}/" -o "$PWD/out/${name}.zip" HEAD
+          if [ -f "src/${name}/package.json" ] && grep -q '"engines"' "src/${name}/package.json"; then
+            (cd "src/${name}" && npx --yes @vscode/vsce package --allow-missing-repository --skip-license -o "$OLDPWD/out/${name}.vsix") || echo "vsix packaging failed - zip only"
+          fi
+          echo "REPO_NAME=${name}" >> "$GITHUB_ENV"
+          ls -l out
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="repo-${REPO_NAME}"
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "${REPO_NAME}" \
+            --notes "Fetched from ${{ github.event.inputs.repo }}" \
+            out/*
