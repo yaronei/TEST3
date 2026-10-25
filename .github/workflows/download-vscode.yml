@@ -1,1 +1,50 @@
+name: Download VS Code Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'VS Code version (e.g. 1.143.0)'
+        required: true
+        default: '1.143.0'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify installer
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -e
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version: $VERSION"; exit 1
+          fi
+          mkdir -p out
+          file="out/VSCodeUserSetup-x64-${VERSION}.exe"
+          code=$(curl -sSL -w '%{http_code}' -o "$file" \
+            "https://update.code.visualstudio.com/${VERSION}/win32-x64-user/stable")
+          size=$(stat -c%s "$file")
+          echo "HTTP $code, $size bytes"
+          [ "$code" = "200" ] || { echo "Version $VERSION not available"; exit 1; }
+          [ "$size" -gt 50000000 ] || { echo "File too small"; exit 1; }
+          [ "$(head -c2 "$file")" = "MZ" ] || { echo "Not a Windows executable"; exit 1; }
+          sha256sum "$file" | tee "out/SHA256.txt"
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -e
+          tag="vscode-${VERSION}"
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "VS Code ${VERSION}" \
+            --notes "VS Code ${VERSION} user installer (win32-x64-user)" \
+            out/*
 
